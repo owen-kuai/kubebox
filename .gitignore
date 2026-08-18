@@ -28,5 +28,8 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+
+# WorkBuddy 工作区数据
+.workbuddy/
