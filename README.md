@@ -29,6 +29,24 @@
 | 不可信级（默认） | gVisor (systrap) | 毫秒级 | ~15MB/沙箱 | 用户上传代码、无 KVM |
 | 强隔离级 | Kata (Dragonball) | ~150ms | ~40MB + overhead | 多租户/敏感/合规 |
 
+## MVP 实现
+
+当前已提供可运行的 Go 控制面垂直切片：
+
+- Sandbox 创建、查询、Drain、Deleted 生命周期
+- 租户 / owner 配额与 allocation ledger 幂等释放
+- `Idempotency-Key` 与请求指纹冲突保护
+- HTTP API：`/healthz`、`/api/v1/sandboxes`
+- Kubernetes 声明式基线：`deploy/kubernetes/mvp.yaml`，包含 Sandbox/SandboxClass/SandboxClaim CRD、gVisor RuntimeClass、控制面 Deployment、租户 deny-all NetworkPolicy
+
+```bash
+go test ./...
+go run ./cmd/kubebox
+kubectl apply -f deploy/kubernetes/mvp.yaml
+```
+
+当前基线中的控制器、envd-proxy、真实 PostgreSQL/MySQL/Redis 适配仍在后续迭代中接入。
+
 ## 关键决策
 
 - 隔离默认档：默认 gVisor + 敏感场景升级 Kata（三档分层）
