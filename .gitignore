@@ -33,3 +33,6 @@ go.work.sum
 
 # WorkBuddy 工作区数据
 .workbuddy/
+
+# Go build output
+/kubebox
