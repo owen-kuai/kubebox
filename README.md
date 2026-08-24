@@ -45,7 +45,13 @@ go run ./cmd/kubebox
 kubectl apply -f deploy/kubernetes/mvp.yaml
 ```
 
-当前基线中的控制器、envd-proxy、真实 PostgreSQL/MySQL/Redis 适配仍在后续迭代中接入。
+已接入的实现骨架还包括：
+
+- `internal/operator`：controller-runtime `SandboxClaim` Reconcile、Kubernetes Pod adapter、finalizer/status 回填
+- `internal/dataplane`：envd-proxy 路由、短期 scope JWT、凭证剥离转发
+- `internal/persistence`：PostgreSQL/MySQL 方言 SQL、配额原子条件更新、allocation CAS 事务骨架
+
+当前仍需接入真实数据库驱动、migration runner、envd gRPC 服务和 Kata 节点运行时配置。
 
 ## 关键决策
 
