@@ -51,7 +51,9 @@ kubectl apply -f deploy/kubernetes/mvp.yaml
 - `internal/dataplane`：envd-proxy 路由、短期 scope JWT、凭证剥离转发
 - `internal/persistence`：PostgreSQL/MySQL 方言 SQL、配额原子条件更新、allocation CAS 事务骨架
 
-当前仍需接入真实数据库驱动、migration runner、envd gRPC 服务和 Kata 节点运行时配置。
+`internal/persistence` 已提供 `GovernanceStore` 接口、`SQLStore.Migrate(ctx)` 和 PostgreSQL/MySQL schema；接入真实数据库时需在启动流程配置数据库驱动、迁移锁和连接池参数。
+
+当前仍需接入 envd gRPC 服务和 Kata 节点运行时配置。
 
 ## 关键决策
 
