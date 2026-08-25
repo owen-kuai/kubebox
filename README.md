@@ -49,11 +49,12 @@ kubectl apply -f deploy/kubernetes/mvp.yaml
 
 - `internal/operator`：controller-runtime `SandboxClaim` Reconcile、Kubernetes Pod adapter、finalizer/status 回填
 - `internal/dataplane`：envd-proxy 路由、短期 scope JWT、凭证剥离转发
+- `internal/envd`：envd 最小 gRPC 执行服务（Health/Exec/ReadFile/WriteFile）、scope 与 sandbox identity 校验、进程内 executor
 - `internal/persistence`：PostgreSQL/MySQL 方言 SQL、配额原子条件更新、allocation CAS 事务骨架
 
 `internal/persistence` 已提供 `GovernanceStore` 接口、`SQLStore.Migrate(ctx)` 和 PostgreSQL/MySQL schema；接入真实数据库时需在启动流程配置数据库驱动、迁移锁和连接池参数。
 
-当前仍需接入 envd gRPC 服务和 Kata 节点运行时配置。
+当前仍需接入 Kata 节点运行时配置，以及将 envd 进程内 executor 替换为容器内真实进程/文件系统执行。
 
 ## 关键决策
 
