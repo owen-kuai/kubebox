@@ -50,9 +50,9 @@ kubectl apply -f deploy/kubernetes/mvp.yaml
 - `internal/operator`：controller-runtime `SandboxClaim` Reconcile、Kubernetes Pod adapter、finalizer/status 回填
 - `internal/dataplane`：envd-proxy 路由、短期 scope JWT、凭证剥离转发
 - `internal/envd`：envd 最小 gRPC 执行服务（Health/Exec/ReadFile/WriteFile）、scope 与 sandbox identity 校验、进程内 `ProcessExecutor`（限定沙箱 root 内执行与文件 IO、路径穿越/符号链接逃逸防护、超时与输出上限）、`MemoryExecutor`（测试用）
-- `internal/persistence`：PostgreSQL/MySQL 方言 SQL、配额原子条件更新、allocation CAS 事务骨架
+- `internal/persistence`：PostgreSQL/MySQL 方言 SQL、配额原子条件更新、allocation CAS 事务骨架、内存版 `MemoryGovernanceStore`
 
-`internal/persistence` 已提供 `GovernanceStore` 接口、`SQLStore.Migrate(ctx)` 和 PostgreSQL/MySQL schema；接入真实数据库时需在启动流程配置数据库驱动、迁移锁和连接池参数。
+`internal/persistence` 已提供 `GovernanceStore` 接口贯穿到 HTTP 控制面：`sandbox.Store` 可注入该边界，配额/分配/幂等记账默认由 `MemoryGovernanceStore` 承接（进程默认即运行在治理边界上），`SetQuota`/`Create` 预留/`Drain` 释放均通过治理层原子条件更新与幂等 CAS 完成，内存 map 仅作读投影。接入真实数据库时用 `SQLStore`（含 `Migrate(ctx)`、方言 schema）替换即可，需在启动流程配置数据库驱动、迁移锁和连接池参数。
 
 当前仍需接入 Kata 节点运行时配置，以及将 `ProcessExecutor` 以主进程方式嵌入 envd 容器镜像并接入数据面拉取。
 

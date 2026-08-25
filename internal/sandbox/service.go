@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/owen-kuai/kubebox/internal/persistence"
 )
 
 type Phase string
@@ -91,6 +94,12 @@ type Store struct {
 	allocations map[string]*Allocation
 	idempotency map[string]*IdempotencyRecord
 	quotas      map[string]*Quota
+
+	// gov is the durable governance boundary. When set, quota/allocation and
+	// idempotency writes are delegated to it; the in-memory maps stay in sync
+	// as a projection for reads. When nil, the store behaves as a pure
+	// in-memory MVP (default).
+	gov persistence.GovernanceStore
 }
 
 func NewStore() *Store {
@@ -100,6 +109,22 @@ func NewStore() *Store {
 		idempotency: make(map[string]*IdempotencyRecord),
 		quotas:      make(map[string]*Quota),
 	}
+}
+
+// NewStoreWithGovernance returns a Store that delegates quota/allocation and
+// idempotency writes to the given durability boundary (e.g. SQLStore). Reads
+// still use the in-memory projection for low latency.
+func NewStoreWithGovernance(gov persistence.GovernanceStore) (*Store, error) {
+	if gov == nil {
+		return nil, errors.New("governance store is required")
+	}
+	return &Store{
+		sandboxes:   make(map[string]*Sandbox),
+		allocations: make(map[string]*Allocation),
+		idempotency: make(map[string]*IdempotencyRecord),
+		quotas:      make(map[string]*Quota),
+		gov:         gov,
+	}, nil
 }
 
 func (s *Store) SetQuota(tenantID, ownerID string, limit int) error {
@@ -116,6 +141,13 @@ func (s *Store) SetQuota(tenantID, ownerID string, limit int) error {
 	}
 	if limit < q.CurrentCount {
 		return ErrQuotaBelowUsage
+	}
+	// Persist to the durable boundary first; on failure abort without touching
+	// the in-memory projection.
+	if s.gov != nil {
+		if err := s.gov.SetQuota(context.Background(), tenantID, ownerID, limit); err != nil {
+			return mapGovError(err)
+		}
 	}
 	q.ConcurrentLimit = limit
 	return nil
@@ -163,14 +195,6 @@ func (s *Store) Create(actorOwnerID, idempotencyKey string, req CreateRequest) (
 		}
 	}
 
-	quota := s.quotas[quotaKey(req.TenantID, actorOwnerID)]
-	if quota == nil {
-		return Sandbox{}, ErrQuotaNotConfigured
-	}
-	if quota.CurrentCount >= quota.ConcurrentLimit {
-		return Sandbox{}, ErrQuotaExceeded
-	}
-
 	now := time.Now().UTC()
 	s.sequence++
 	sandboxID := fmt.Sprintf("sbx-%08d", s.sequence)
@@ -180,8 +204,33 @@ func (s *Store) Create(actorOwnerID, idempotencyKey string, req CreateRequest) (
 		RequestHash: hash, Status: IdempotencyPending, LeaseVersion: 1,
 		ExpiresAt: now.Add(time.Duration(req.TTLSeconds+7200) * time.Second),
 	}
-	// This in-memory transaction models the DB conditional update and allocation CAS.
-	quota.CurrentCount++
+
+	if s.gov != nil {
+		// Durable boundary is authoritative for the conditional quota slot and
+		// allocation CAS. On success, mirror the projection so in-memory reads
+		// and releases stay consistent with the durable count.
+		if err := s.gov.ReserveAllocation(context.Background(), req.TenantID, actorOwnerID, allocationID, sandboxID, now); err != nil {
+			delete(s.idempotency, idemKey)
+			return Sandbox{}, mapGovError(err)
+		}
+		key := quotaKey(req.TenantID, actorOwnerID)
+		proj := s.quotas[key]
+		if proj == nil {
+			proj = &Quota{TenantID: req.TenantID, OwnerID: actorOwnerID}
+			s.quotas[key] = proj
+		}
+		proj.CurrentCount++
+	} else {
+		quota := s.quotas[quotaKey(req.TenantID, actorOwnerID)]
+		if quota == nil {
+			return Sandbox{}, ErrQuotaNotConfigured
+		}
+		if quota.CurrentCount >= quota.ConcurrentLimit {
+			return Sandbox{}, ErrQuotaExceeded
+		}
+		// This in-memory transaction models the DB conditional update and allocation CAS.
+		quota.CurrentCount++
+	}
 	s.allocations[allocationID] = &Allocation{ID: allocationID, TenantID: req.TenantID, OwnerID: actorOwnerID, SandboxID: sandboxID, Status: AllocationReserved}
 	sb := &Sandbox{ID: sandboxID, TenantID: req.TenantID, OwnerID: actorOwnerID, Template: req.Template, RuntimeClass: req.RuntimeClass, Resources: cloneMap(req.Resources), Phase: PhaseReady, AllocationID: allocationID, IdempotencyKey: idempotencyKey, ExpiresAt: now.Add(time.Duration(req.TTLSeconds) * time.Second), CreatedAt: now, UpdatedAt: now}
 	s.sandboxes[sandboxID] = sb
@@ -245,6 +294,14 @@ func (s *Store) releaseAllocationLocked(allocationID string) error {
 	if allocation.Status == AllocationReleased {
 		return nil
 	}
+	if s.gov != nil {
+		// Durable boundary owns the RESERVED -> RELEASED CAS and aggregate
+		// decrement. Idempotent at the store level: already-released is a
+		// no-op. Mirror the projection only on success.
+		if err := s.gov.ReleaseAllocation(context.Background(), allocation.TenantID, allocation.OwnerID, allocationID, time.Now().UTC()); err != nil {
+			return mapGovError(err)
+		}
+	}
 	allocation.Status = AllocationReleased
 	quota := s.quotas[quotaKey(allocation.TenantID, allocation.OwnerID)]
 	if quota == nil || quota.CurrentCount <= 0 {
@@ -258,6 +315,27 @@ func requestHash(req CreateRequest) string {
 	b, _ := json.Marshal(req)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
+}
+
+// mapGovError translates a governance-boundary error into a domain error so
+// the control plane exposes a stable vocabulary to callers.
+func mapGovError(err error) error {
+	switch {
+	case errors.Is(err, persistence.ErrQuotaExceeded):
+		return ErrQuotaExceeded
+	case errors.Is(err, persistence.ErrQuotaNotConfigured):
+		return ErrQuotaNotConfigured
+	case errors.Is(err, persistence.ErrQuotaBelowUsage):
+		return ErrQuotaBelowUsage
+	case errors.Is(err, persistence.ErrQuotaCorrupt):
+		return ErrQuotaCorrupt
+	case errors.Is(err, persistence.ErrAllocationNotFound):
+		return ErrAllocationNotFound
+	case errors.Is(err, persistence.ErrAllocationState):
+		return ErrAllocationNotFound
+	default:
+		return err
+	}
 }
 
 func quotaKey(tenantID, ownerID string) string { return tenantID + "\x00" + ownerID }

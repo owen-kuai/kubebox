@@ -48,6 +48,37 @@ func (s *SQLStore) SchemaStatements() []string {
 	}
 }
 
+// SetQuota installs or raises the owner's concurrent limit. It refuses to
+// lower the limit below the current in-use count.
+func (s *SQLStore) SetQuota(ctx context.Context, tenantID, ownerID string, limit int) error {
+	if tenantID == "" || ownerID == "" || limit < 0 {
+		return ErrInvalidArgument
+	}
+	if s.dialect == DialectMySQL {
+		query := `INSERT INTO t_owner_quota (tenant_id, owner_id, concurrent_limit, current_count) VALUES (?, ?, ?, 0) ON DUPLICATE KEY UPDATE concurrent_limit = IF(current_count > VALUES(concurrent_limit), current_count, VALUES(concurrent_limit))`
+		if _, err := s.db.ExecContext(ctx, query, tenantID, ownerID, limit); err != nil {
+			return err
+		}
+		return nil
+	}
+	// Postgres: upsert, then reject lowering below current usage.
+	upsert := s.bind(`INSERT INTO t_owner_quota (tenant_id, owner_id, concurrent_limit, current_count) VALUES (?, ?, ?, 0) ON CONFLICT (tenant_id, owner_id) DO UPDATE SET concurrent_limit = EXCLUDED.concurrent_limit`)
+	if _, err := s.db.ExecContext(ctx, upsert, tenantID, ownerID, limit); err != nil {
+		return err
+	}
+	var current int
+	check := s.bind(`SELECT current_count FROM t_owner_quota WHERE tenant_id = ? AND owner_id = ?`)
+	if err := s.db.QueryRowContext(ctx, check, tenantID, ownerID).Scan(&current); err != nil {
+		return err
+	}
+	if current > limit {
+		restore := s.bind(`UPDATE t_owner_quota SET concurrent_limit = current_count WHERE tenant_id = ? AND owner_id = ?`)
+		_, _ = s.db.ExecContext(ctx, restore, tenantID, ownerID)
+		return ErrQuotaBelowUsage
+	}
+	return nil
+}
+
 // ReserveAllocation atomically reserves one owner quota slot and creates its
 // allocation ledger row. The transaction commits both changes or neither.
 func (s *SQLStore) ReserveAllocation(ctx context.Context, tenantID, ownerID, allocationID, sandboxID string, now time.Time) error {
@@ -173,6 +204,8 @@ func (s *SQLStore) bind(query string) string {
 var (
 	ErrInvalidArgument    = errors.New("invalid persistence argument")
 	ErrQuotaExceeded      = errors.New("quota exceeded")
+	ErrQuotaBelowUsage    = errors.New("quota below current usage")
+	ErrQuotaNotConfigured = errors.New("quota not configured")
 	ErrQuotaCorrupt       = errors.New("quota ledger is inconsistent")
 	ErrAllocationNotFound = errors.New("allocation not found")
 	ErrAllocationState    = errors.New("invalid allocation state")
