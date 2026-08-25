@@ -140,7 +140,8 @@ func (p *Proxy) Handler() http.Handler {
 		}
 		scope := scopeFor(r.Method, backendPath)
 		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if _, err := p.Issuer.Validate(token, sandboxID, scope); err != nil {
+		envelope, err := p.Issuer.Validate(token, sandboxID, scope)
+		if err != nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "credential rejected"})
 			return
 		}
@@ -151,6 +152,9 @@ func (p *Proxy) Handler() http.Handler {
 			req.URL.Path = joinPath(target.Path, backendPath)
 			req.Header.Del("Authorization")
 			req.Header.Set("X-Kubebox-Sandbox-ID", sandboxID)
+			// Re-derive the granted scopes so the trusted envd gateway can
+			// re-check them (defense in depth) without the client sending them.
+			req.Header.Set("X-Kubebox-Scope", strings.Join(envelope.Scopes, ","))
 		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "envd unavailable"})
