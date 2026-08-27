@@ -84,6 +84,16 @@ spec:
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
             - --leader-elect=false
+          env:
+            # 数据面路由联动：SandboxClaim Ready/删除时向 envd-proxy 注册/注销路由。
+            # 未配置时 controller 以纯控制面模式运行（不做路由注册）。
+            - name: KUBEBOX_ENVD_PROXY_URL
+              value: "http://envd-proxy.sandbox-system.svc:8080"
+            - name: KUBEBOX_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: envd-proxy-secret
+                  key: admin-secret
           ports:
             - name: metrics
               containerPort: 8080

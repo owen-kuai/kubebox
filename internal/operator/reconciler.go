@@ -32,6 +32,7 @@ type Claim struct {
 	DesiredState   string
 	Phase          ClaimPhase
 	PodName        string
+	PodIP          string
 	SandboxID      string
 	ProxyEndpoint  string
 	ExpiresAt      time.Time
@@ -42,6 +43,7 @@ type Pod struct {
 	Name         string
 	RuntimeClass string
 	SandboxID    string
+	IP           string
 	Labels       map[string]string
 	Ready        bool
 	Healthy      bool
@@ -114,6 +116,7 @@ func (r *Reconciler) Reconcile(claim *Claim) (bool, error) {
 	}
 	claim.Phase = ClaimReady
 	claim.SandboxID = claim.Name
+	claim.PodIP = pod.IP
 	claim.ProxyEndpoint = fmt.Sprintf("envd-proxy.%s.svc:443", claim.Namespace)
 	claim.ExpiresAt = r.Now().UTC().Add(time.Duration(claim.TTLSeconds) * time.Second)
 	return false, nil

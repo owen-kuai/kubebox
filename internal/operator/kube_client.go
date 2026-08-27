@@ -98,7 +98,7 @@ func podFromKube(object corev1.Pod) Pod {
 	if len(object.Status.ContainerStatuses) > 0 {
 		healthy = healthy && object.Status.ContainerStatuses[0].Ready
 	}
-	return Pod{Namespace: object.Namespace, Name: object.Name, RuntimeClass: valueOrEmpty(object.Spec.RuntimeClassName), Labels: object.Labels, Ready: ready, Healthy: healthy, Deleted: object.DeletionTimestamp != nil}
+	return Pod{Namespace: object.Namespace, Name: object.Name, RuntimeClass: valueOrEmpty(object.Spec.RuntimeClassName), IP: object.Status.PodIP, Labels: object.Labels, Ready: ready, Healthy: healthy, Deleted: object.DeletionTimestamp != nil}
 }
 
 func stringPtr(v string) *string { return &v }

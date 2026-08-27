@@ -50,9 +50,10 @@ kubectl apply -f deploy/kubernetes/envd-proxy.yaml   # 数据面边界（需先�
 当前仓库的 `internal/operator` 已接入 controller-runtime：
 
 - `kubeapi.SandboxClaim` 提供 CRD Go 类型和 Scheme 注册
-- `operator.SetupManager(mgr)` 注册 `SandboxClaim` Controller
+- `operator.SetupManager(mgr, registrar)` 注册 `SandboxClaim` Controller，可注入 `RouteRegistrar` 做数据面路由联动
 - `KubePodClient` 将 reconcile 的 Pod 副作用映射到 Kubernetes API（注入 sandbox id、envd 双端口 :50051/:8080、emptyDir `/sandbox` 卷、只读根文件系统）
-- fake client 测试覆盖 CRD 读写、Pod 创建、status 回填和 finalizer
+- `SandboxClaimReconciler.syncRoute`：Ready 时向 envd-proxy 注册路由、删除时注销（`KUBEBOX_ENVD_PROXY_URL` + `KUBEBOX_ADMIN_SECRET` 注入，未配置则纯控制面运行）
+- fake client 测试覆盖 CRD 读写、Pod 创建、status 回填、finalizer 与路由注册/注销
 - `SandboxClaim` reconcile 核心覆盖确定性 Pod 名称、AlreadyExists 幂等、Ready 探活、删除回收和运行时白名单
 
 `internal/dataplane` 提供数据面边界：
@@ -61,6 +62,7 @@ kubectl apply -f deploy/kubernetes/envd-proxy.yaml   # 数据面边界（需先�
 - `RouteRegistry` 沙箱路由表（Set/Get/List/Unregister，并发安全）
 - `Admin` 路由管理 API（共享密钥常量时间比较鉴权）
 - `HealthMonitor` 后端健康探测（连续失败阈值注销）
+- `RouteClient` 控制面/operator 侧的路由注册客户端（实现 `RouteRegistrar`）
 
 生产接入前仍需补齐：
 

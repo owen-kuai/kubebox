@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 
+	"github.com/owen-kuai/kubebox/internal/dataplane"
 	"github.com/owen-kuai/kubebox/internal/operator"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -48,7 +49,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := operator.SetupManager(manager); err != nil {
+	// Optional envd-proxy route registration. When KUBEBOX_ENVD_PROXY_URL and
+	// KUBEBOX_ADMIN_SECRET are set, the controller keeps envd-proxy's route
+	// table in sync as sandboxes become Ready / are deleted.
+	var registrar dataplane.RouteRegistrar
+	if proxyURL := os.Getenv("KUBEBOX_ENVD_PROXY_URL"); proxyURL != "" {
+		client, err := dataplane.NewRouteClient(proxyURL, os.Getenv("KUBEBOX_ADMIN_SECRET"))
+		if err != nil {
+			setupLog.Error(err, "unable to configure route client")
+			os.Exit(1)
+		}
+		registrar = client
+		setupLog.Info("route registration enabled", "proxy", proxyURL)
+	}
+
+	if err := operator.SetupManager(manager, registrar); err != nil {
 		setupLog.Error(err, "unable to set up controller")
 		os.Exit(1)
 	}

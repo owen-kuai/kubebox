@@ -3,12 +3,15 @@ package operator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/owen-kuai/kubebox/internal/dataplane"
 	"github.com/owen-kuai/kubebox/internal/kubeapi"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -28,6 +31,7 @@ const (
 type SandboxClaimReconciler struct {
 	client.Client
 	PodClient PodClient
+	Registrar dataplane.RouteRegistrar
 	Now       func() time.Time
 }
 
@@ -60,10 +64,12 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req reconcile.Re
 	if object.DeletionTimestamp != nil {
 		claim.DesiredState = "Deleted"
 	}
+	oldPhase := object.Status.Phase
 	_, err := (&Reconciler{Pods: r.PodClient, Now: now}).Reconcile(claim)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
+	r.syncRoute(ctx, claim, oldPhase)
 	if claim.Phase != ClaimDeleted && object.DeletionTimestamp == nil && !containsString(object.Finalizers, claimFinalizer) {
 		object.Finalizers = append(object.Finalizers, claimFinalizer)
 		if err := r.Update(ctx, &object); err != nil {
@@ -99,6 +105,38 @@ func (r *SandboxClaimReconciler) SetupWithManager(mgr manager.Manager) error {
 		r.Client = mgr.GetClient()
 	}
 	return builder.ControllerManagedBy(mgr).For(&kubeapi.SandboxClaim{}).Complete(r)
+}
+
+// syncRoute keeps envd-proxy's route table in sync with the claim lifecycle: a
+// newly Ready sandbox gets its route registered, a deleted sandbox has it
+// removed. Route registration is best-effort and never blocks the reconcile.
+func (r *SandboxClaimReconciler) syncRoute(ctx context.Context, claim *Claim, oldPhase string) {
+	if r.Registrar == nil {
+		return
+	}
+	logger := log.FromContext(ctx)
+	switch {
+	case claim.Phase == ClaimReady && oldPhase != string(ClaimReady):
+		if claim.PodIP == "" {
+			logger.Info("skipping route registration: pod IP not yet available", "sandbox", claim.SandboxID)
+			return
+		}
+		target := fmt.Sprintf("http://%s:8080", claim.PodIP)
+		if err := r.Registrar.Register(ctx, claim.SandboxID, target); err != nil {
+			logger.Error(err, "failed to register route", "sandbox", claim.SandboxID, "target", target)
+		} else {
+			logger.Info("registered sandbox route", "sandbox", claim.SandboxID, "target", target)
+		}
+	case claim.Phase == ClaimDeleted:
+		if claim.SandboxID == "" {
+			return
+		}
+		if err := r.Registrar.Unregister(ctx, claim.SandboxID); err != nil {
+			logger.Error(err, "failed to unregister route", "sandbox", claim.SandboxID)
+		} else {
+			logger.Info("unregistered sandbox route", "sandbox", claim.SandboxID)
+		}
+	}
 }
 
 func runtimeClassFromClassRef(classRef string) string {
