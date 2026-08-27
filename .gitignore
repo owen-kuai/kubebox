@@ -36,3 +36,4 @@ go.work.sum
 
 # Go build output
 /kubebox
+/controller

@@ -1,0 +1,131 @@
+# kubebox controller：SandboxClaim Operator 运行清单
+#
+# 职责：watch sandboxclaims.sandbox.kubebox.io，在租户 namespace 中创建/回收沙箱 Pod，
+# 回填 status 与 finalizer。运行在控制面 sandbox-system namespace。
+#
+# 部署前置：CRD 与 RuntimeClass 已就绪（见 mvp.yaml），镜像 kubebox-controller:dev 可拉取。
+# 应用：kubectl apply -f deploy/kubernetes/controller.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebox-controller
+  namespace: sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebox-controller-role
+rules:
+  # SandboxClaim CRD 读写 + status/finalizer 子资源
+  - apiGroups: [sandbox.kubebox.io]
+    resources: [sandboxclaims]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [sandbox.kubebox.io]
+    resources: [sandboxclaims/status]
+    verbs: [get, update, patch]
+  - apiGroups: [sandbox.kubebox.io]
+    resources: [sandboxclaims/finalizers]
+    verbs: [update]
+  # 在租户 namespace 创建/回收沙箱 Pod
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # 事件上报（可选，用于排障）
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  # leader election（--leader-elect=true 时需要）
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubebox-controller-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebox-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: kubebox-controller
+    namespace: sandbox-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubebox-controller
+  namespace: sandbox-system
+  labels:
+    app: kubebox-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubebox-controller
+  template:
+    metadata:
+      labels:
+        app: kubebox-controller
+    spec:
+      serviceAccountName: kubebox-controller
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: kubebox-controller:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --leader-elect=false
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: healthz
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 1
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubebox-controller-metrics
+  namespace: sandbox-system
+  labels:
+    app: kubebox-controller
+spec:
+  selector:
+    app: kubebox-controller
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics

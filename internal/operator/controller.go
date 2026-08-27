@@ -18,6 +18,13 @@ const (
 	ownerLabel     = "kubebox.io/owner"
 )
 
+// +kubebuilder:rbac:groups=sandbox.kubebox.io,resources=sandboxclaims,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=sandbox.kubebox.io,resources=sandboxclaims/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=sandbox.kubebox.io,resources=sandboxclaims/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+
 type SandboxClaimReconciler struct {
 	client.Client
 	PodClient PodClient
