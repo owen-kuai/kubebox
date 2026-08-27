@@ -1,0 +1,108 @@
+# kubebox envd-proxy：公网数据面边界
+#
+# 职责：校验短期 scope JWT、剥离凭证、注入 sandbox id + 派生 scope，反向代理到
+# 可信 envd HTTP 门面；内置控制面专用路由管理 API（/internal/v1/routes）与后端
+# 健康探测（失败自动注销路由）。
+#
+# 前置：创建 envd-proxy-secret（KUBEBOX_TOKEN_SECRET / KUBEBOX_ADMIN_SECRET），
+# 见文件尾注释。镜像 kubebox-envd-proxy:dev 可拉取。
+#
+# 应用：kubectl apply -f deploy/kubernetes/envd-proxy.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: envd-proxy
+  namespace: sandbox-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: envd-proxy
+  namespace: sandbox-system
+  labels:
+    app: envd-proxy
+spec:
+  selector:
+    app: envd-proxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envd-proxy
+  namespace: sandbox-system
+  labels:
+    app: envd-proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: envd-proxy
+  template:
+    metadata:
+      labels:
+        app: envd-proxy
+    spec:
+      serviceAccountName: envd-proxy
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: proxy
+          image: kubebox-envd-proxy:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KUBEBOX_ADDR
+              value: ":8080"
+            - name: KUBEBOX_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: envd-proxy-secret
+                  key: token-secret
+            - name: KUBEBOX_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: envd-proxy-secret
+                  key: admin-secret
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 1
+              memory: 256Mi
+---
+# 密钥示例（生产用 Vault/SealedSecret，勿明文提交）：
+#   kubectl -n sandbox-system create secret generic envd-proxy-secret \
+#     --from-literal=token-secret=<至少32字节随机串> \
+#     --from-literal=admin-secret=<控制面专用随机串>
+#
+# 生成 token-secret：
+#   openssl rand -base64 32

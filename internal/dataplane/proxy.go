@@ -121,6 +121,31 @@ func (r *RouteRegistry) Get(sandboxID string) (*url.URL, bool) {
 	return &copy, true
 }
 
+// List returns a snapshot of all registered sandbox -> target routes. It is
+// used by the health monitor to probe backends and by admin introspection.
+func (r *RouteRegistry) List() map[string]*url.URL {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]*url.URL, len(r.routes))
+	for id, target := range r.routes {
+		copy := *target
+		out[id] = &copy
+	}
+	return out
+}
+
+// Unregister removes a route, reporting whether it existed. It is the health
+// monitor's idempotent counterpart to Set.
+func (r *RouteRegistry) Unregister(sandboxID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.routes[sandboxID]; !ok {
+		return false
+	}
+	delete(r.routes, sandboxID)
+	return true
+}
+
 type Proxy struct {
 	Issuer *TokenIssuer
 	Routes *RouteRegistry
