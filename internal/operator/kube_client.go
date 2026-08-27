@@ -26,11 +26,41 @@ func (k *KubePodClient) Get(namespace, name string) (Pod, error) {
 }
 
 func (k *KubePodClient) Create(pod Pod) error {
+	sandboxID := pod.SandboxID
+	if sandboxID == "" {
+		sandboxID = pod.Name
+	}
 	object := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: pod.Name, Labels: pod.Labels},
 		Spec: corev1.PodSpec{
-			RuntimeClassName:             stringPtr(pod.RuntimeClass),
-			Containers:                   []corev1.Container{{Name: "envd", Image: "kubebox-envd:dev", Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 50051}}}},
+			RuntimeClassName: stringPtr(pod.RuntimeClass),
+			Containers: []corev1.Container{{
+				Name:    "envd",
+				Image:   "kubebox-envd:dev",
+				Command: []string{"/usr/local/bin/envd"},
+				Args: []string{
+					"--sandbox-id", sandboxID,
+					"--root", "/sandbox",
+					"--grpc-addr", ":50051",
+					"--http-addr", ":8080",
+				},
+				Env: []corev1.EnvVar{
+					{Name: "KUBEBOX_SANDBOX_ID", Value: sandboxID},
+					{Name: "KUBEBOX_SANDBOX_ROOT", Value: "/sandbox"},
+				},
+				Ports: []corev1.ContainerPort{
+					{Name: "grpc", ContainerPort: 50051},
+					{Name: "http", ContainerPort: 8080},
+				},
+				VolumeMounts: []corev1.VolumeMount{{Name: "sandbox", MountPath: "/sandbox"}},
+				SecurityContext: &corev1.SecurityContext{
+					RunAsNonRoot:             boolPtr(true),
+					ReadOnlyRootFilesystem:   boolPtr(true),
+					AllowPrivilegeEscalation: boolPtr(false),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
+			}},
+			Volumes:                      []corev1.Volume{{Name: "sandbox", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 			AutomountServiceAccountToken: boolPtr(false),
 			SecurityContext:              &corev1.PodSecurityContext{RunAsNonRoot: boolPtr(true)},
 		},

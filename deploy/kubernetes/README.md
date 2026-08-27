@@ -17,32 +17,39 @@
 - controller Deployment（metrics :8080 / healthz :8081，非 root、只读根文件系统、drop ALL）
 - 可选 metrics Service（Prometheus 抓取）
 
-构建 controller 镜像：
+`runtime.yaml` 提供 Kata 强隔离档 RuntimeClass：
+
+- `kata` RuntimeClass（`handler: kata`，nodeSelector 绑定裸金属 KVM 节点池 + toleration）
+- 节点标签/污点参考命令（`sandbox=vm`、`kubebox.io/pool=kata`）
+- 节点运行时部署与验证见 `docs/kata-runtime-deployment.md`
+
+构建镜像：
 
 ```bash
 docker build -f deploy/docker/controller.Dockerfile -t kubebox-controller:dev .
+docker build -f deploy/docker/envd.Dockerfile      -t kubebox-envd:dev .
 ```
 
 部署顺序：
 
 ```bash
-kubectl apply -f deploy/kubernetes/mvp.yaml          # CRD + RuntimeClass + 控制面
-kubectl apply -f deploy/kubernetes/controller.yaml   # Operator + RBAC
+kubectl apply -f deploy/kubernetes/mvp.yaml          # CRD + gVisor RuntimeClass + 控制面
+kubectl apply -f deploy/kubernetes/controller.yaml   # SandboxClaim Operator + RBAC
+kubectl apply -f deploy/kubernetes/runtime.yaml      # Kata RuntimeClass（需先部署节点运行时）
 ```
 
 当前仓库的 `internal/operator` 已接入 controller-runtime：
 
 - `kubeapi.SandboxClaim` 提供 CRD Go 类型和 Scheme 注册
 - `operator.SetupManager(mgr)` 注册 `SandboxClaim` Controller
-- `KubePodClient` 将 reconcile 的 Pod 副作用映射到 Kubernetes API
+- `KubePodClient` 将 reconcile 的 Pod 副作用映射到 Kubernetes API（注入 sandbox id、envd 双端口 :50051/:8080、emptyDir `/sandbox` 卷、只读根文件系统）
 - fake client 测试覆盖 CRD 读写、Pod 创建、status 回填和 finalizer
 - `SandboxClaim` reconcile 核心覆盖确定性 Pod 名称、AlreadyExists 幂等、Ready 探活、删除回收和运行时白名单
 
 生产接入前仍需补齐：
 
 1. 为租户命名空间和 envd-proxy 配置生产 NetworkPolicy；
-2. 接入真实配额与 allocation ledger 存储；
-3. 接入 envd-proxy 路由注册与健康探测；
-4. 接入 Webhook 校验 SandboxClass/runtimeClassName。
+2. 接入 envd-proxy 路由注册与健康探测；
+3. 接入 Webhook 校验 SandboxClass/runtimeClassName。
 
 部署前应先为每个租户 namespace 创建 deny-all NetworkPolicy，再创建沙箱 Pod。示例清单中的 `sandbox-tenant-example` 仅用于开发验证。

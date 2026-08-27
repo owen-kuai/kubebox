@@ -41,6 +41,7 @@ type Pod struct {
 	Namespace    string
 	Name         string
 	RuntimeClass string
+	SandboxID    string
 	Labels       map[string]string
 	Ready        bool
 	Healthy      bool
@@ -86,7 +87,7 @@ func (r *Reconciler) Reconcile(claim *Claim) (bool, error) {
 	}
 	if errors.Is(err, ErrNotFound) {
 		pod = Pod{
-			Namespace: claim.Namespace, Name: claim.PodName, RuntimeClass: claim.RuntimeClass,
+			Namespace: claim.Namespace, Name: claim.PodName, RuntimeClass: claim.RuntimeClass, SandboxID: claim.Name,
 			Labels: map[string]string{
 				"kubebox.io/tenant": claim.TenantID,
 				"kubebox.io/owner":  claim.OwnerID,

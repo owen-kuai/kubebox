@@ -1,0 +1,46 @@
+# kubebox 节点运行时清单：Kata 强隔离档
+#
+# 三档隔离：runc（可信）/ gVisor（默认，systrap 无需 KVM）/ Kata（强隔离，需 KVM）。
+# gVisor RuntimeClass 已在 mvp.yaml 定义；本清单补充 Kata 档。
+#
+# 前置（见 docs/kata-runtime-deployment.md）：
+#   1. 节点安装 containerd + Kata 3.6（Dragonball VMM），containerd 注册 kata handler；
+#   2. Kata 节点必须支持 KVM（裸金属或直通 KVM 的虚机），否则沙箱回退 gVisor；
+#   3. 为 Kata 节点打标签/污点，SandboxClass 用 nodeSelector 约束调度（防降级）。
+#
+# 应用：kubectl apply -f deploy/kubernetes/runtime.yaml
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata
+  labels:
+    kubebox.io/isolation-tier: strong
+handler: kata
+# Kata 3.x（Dragonball）在 containerd 的默认 handler 名为 "kata"。
+# 若 containerd 按 VM 类型拆分 handler（如 kata-qemu / kata-clh / kata-fc / kata-dragonball），
+# 请将下方 handler 改为实际注册名，或为每个 handler 各建一个 RuntimeClass。
+# handler: kata-dragonball
+scheduling:
+  nodeSelector:
+    # Kata 强隔离档只调度到具备 KVM 的裸金属节点池 B。
+    # 运维需为这些节点打标签：kubectl label node <node> sandbox=vm
+    sandbox: vm
+    # 可选：进一步绑定到专用节点池（见部署设计 §R-C-004）。
+    kubebox.io/pool: kata
+  tolerations:
+    # 允许调度到打了 sandbox=vm:NoSchedule 污点的 Kata 节点。
+    - key: sandbox
+      operator: Equal
+      value: vm
+      effect: NoSchedule
+---
+# Kata 节点池标签/污点配置参考（对每个 Kata 裸金属节点执行，非清单资源）：
+#   kubectl label node <node> sandbox=vm kubebox.io/pool=kata
+#   kubectl taint node <node> sandbox=vm:NoSchedule
+#
+# 校验 RuntimeClass 已就绪：
+#   kubectl get runtimeclass kata gvisor runc
+#
+# 校验 Kata handler 已被 containerd 识别（在节点上）：
+#   ctr runtime list | grep -E 'kata|runsc'

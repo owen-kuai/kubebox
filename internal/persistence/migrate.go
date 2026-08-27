@@ -1,9 +1,14 @@
 package persistence
 
-import "context"
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+)
 
 // Migrate creates the governance tables for the selected SQL dialect.
-// Production should wrap this with the deployment's migration lock.
+// Production should prefer MigrateLocked so replicas do not race.
 func (s *SQLStore) Migrate(ctx context.Context) error {
 	for _, statement := range s.SchemaStatements() {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -11,4 +16,40 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// MigrateLocked runs the schema migration under a dialect-appropriate advisory
+// lock (Postgres pg_advisory_lock / MySQL GET_LOCK) so multiple replicas do not
+// race on first startup.
+func (s *SQLStore) MigrateLocked(ctx context.Context) error {
+	unlock, err := s.acquireMigrationLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.Migrate(ctx)
+}
+
+// acquireMigrationLock takes an advisory lock and returns a release function.
+const migrationLockKey = 7378697629483820646 // stable, arbitrarily-chosen 64-bit key
+
+func (s *SQLStore) acquireMigrationLock(ctx context.Context) (func(), error) {
+	if s.dialect == DialectPostgres {
+		if _, err := s.db.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+			return nil, fmt.Errorf("acquire migration lock: %w", err)
+		}
+		return func() {
+			_, _ = s.db.Exec(`SELECT pg_advisory_unlock($1)`, migrationLockKey)
+		}, nil
+	}
+	var got sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT GET_LOCK('kubebox_migrate', 30)`).Scan(&got); err != nil {
+		return nil, fmt.Errorf("acquire migration lock: %w", err)
+	}
+	if !got.Valid || got.Int64 != 1 {
+		return nil, errors.New("migration lock acquisition timed out")
+	}
+	return func() {
+		_, _ = s.db.Exec(`SELECT RELEASE_LOCK('kubebox_migrate')`)
+	}, nil
 }
