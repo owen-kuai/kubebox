@@ -1,0 +1,81 @@
+# kubebox 准入校验 Webhook：runtimeClassName 隔离档白名单
+#
+# 职责：拒绝 classRef 落在 {runc,gvisor,kata} 之外的 SandboxClaim，堵住隔离降级
+# 漏洞（AG-12）。校验器实现在 internal/operator/webhook.go，运行在 controller
+# Deployment 内（--enable-webhook=true 时监听 :9443）。
+#
+# TLS 前置（二选一，见文件尾注释）：
+#   1. cert-manager：为 kubebox-controller-webhook 签发并注入 CA；
+#   2. 自签：生成 tls.crt/tls.key 挂载到 controller 的 webhook cert dir。
+#
+# 应用：kubectl apply -f deploy/kubernetes/webhook.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubebox-controller-webhook
+  namespace: sandbox-system
+  labels:
+    app: kubebox-controller
+spec:
+  selector:
+    app: kubebox-controller
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: kubebox-validating-webhook
+webhooks:
+  - name: vsandboxclaim.kubebox.io
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: kubebox-controller-webhook
+        namespace: sandbox-system
+        path: /validate-sandbox-kubebox-io-v1alpha1-sandboxclaim
+        # caBundle 由 cert-manager 或自签流程注入（base64 编码的 CA 证书）。
+        # 若用 cert-manager 的 Certificate 资源 + cainjector，可省略此处自动回填。
+        # caBundle: <base64-CA>
+    rules:
+      - apiGroups: [sandbox.kubebox.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE, UPDATE]
+        resources: [sandboxclaims]
+        scope: Namespaced
+---
+# controller 启动参数需开启 webhook（在 controller.yaml 中追加）：
+#   args:
+#     - --enable-webhook=true
+#     - --webhook-port=9443
+#     - --webhook-cert-dir=/etc/kubebox/webhook-certs
+#   ports:
+#     - name: webhook
+#       containerPort: 9443
+#   volumeMounts:
+#     - name: webhook-certs
+#       mountPath: /etc/kubebox/webhook-certs
+#       readOnly: true
+#
+# 自签 cert 流程（无 cert-manager 时）：
+#   # 1) 生成 CA + 服务端证书（CN/SAN 指向 kubebox-controller-webhook.sandbox-system.svc）
+#   # 2) 创建 secret 并挂载到 controller：
+#   kubectl -n sandbox-system create secret tls webhook-server-cert \
+#     --cert=tls.crt --key=tls.key
+#   # 3) 提取 CA 回填 ValidatingWebhookConfiguration 的 caBundle：
+#   kubectl -n sandbox-system get secret webhook-server-cert -o jsonpath='{.data.ca\.crt}'
+#
+# 验证：
+#   kubectl apply -f - <<'EOF'
+#   apiVersion: sandbox.kubebox.io/v1alpha1
+#   kind: SandboxClaim
+#   metadata: {name: bad-claim, namespace: sandbox-tenant-example}
+#   spec: {classRef: privileged, template: python, ttlSeconds: 60}
+#   EOF
+#   # 期望：被 webhook 拒绝（classRef privileged 不在白名单）。

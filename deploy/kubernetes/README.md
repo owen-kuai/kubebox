@@ -30,6 +30,20 @@
 - 控制面专用路由管理 API：`/internal/v1/routes`（POST 注册 / GET 列出 / DELETE 注销）
 - 后端健康探测：周期性探测 envd `/healthz`，连续失败自动注销路由
 
+`webhook.yaml` 提供 runtimeClassName 隔离档校验：
+
+- `kubebox-controller-webhook` Service（controller 的 :9443）
+- `ValidatingWebhookConfiguration`：拒绝 classRef ∉ {runc,gvisor,kata} 的 SandboxClaim（AG-12 防越权降级），`failurePolicy: Fail`
+- 需 TLS cert（cert-manager 或自签），校验器实现在 `internal/operator/webhook.go`
+
+`networkpolicy.yaml` 补齐生产东西向流量：
+
+- envd-proxy egress → 沙箱 Pod（HTTP :8080 + gRPC :50051）+ DNS
+- envd-proxy ingress（仅公网边缘 Ingress/网关）
+- controller egress → envd-proxy（路由管理 API）+ K8s API + DNS
+- kubebox-api egress → K8s API + DNS（数据库按需放开）
+- 沙箱 Pod ingress 白名单（仅 envd-proxy）+ egress 默认拒绝（DNS + 白名单依赖源）
+
 构建镜像：
 
 ```bash
@@ -45,6 +59,8 @@ kubectl apply -f deploy/kubernetes/mvp.yaml          # CRD + gVisor RuntimeClass
 kubectl apply -f deploy/kubernetes/controller.yaml   # SandboxClaim Operator + RBAC
 kubectl apply -f deploy/kubernetes/runtime.yaml      # Kata RuntimeClass（需先部署节点运行时）
 kubectl apply -f deploy/kubernetes/envd-proxy.yaml   # 数据面边界（需先创建 envd-proxy-secret）
+kubectl apply -f deploy/kubernetes/networkpolicy.yaml # 生产 NetworkPolicy
+kubectl apply -f deploy/kubernetes/webhook.yaml       # 隔离档校验 Webhook（需先注入 TLS cert）
 ```
 
 当前仓库的 `internal/operator` 已接入 controller-runtime：
@@ -53,8 +69,8 @@ kubectl apply -f deploy/kubernetes/envd-proxy.yaml   # 数据面边界（需先�
 - `operator.SetupManager(mgr, registrar)` 注册 `SandboxClaim` Controller，可注入 `RouteRegistrar` 做数据面路由联动
 - `KubePodClient` 将 reconcile 的 Pod 副作用映射到 Kubernetes API（注入 sandbox id、envd 双端口 :50051/:8080、emptyDir `/sandbox` 卷、只读根文件系统）
 - `SandboxClaimReconciler.syncRoute`：Ready 时向 envd-proxy 注册路由、删除时注销（`KUBEBOX_ENVD_PROXY_URL` + `KUBEBOX_ADMIN_SECRET` 注入，未配置则纯控制面运行）
-- fake client 测试覆盖 CRD 读写、Pod 创建、status 回填、finalizer 与路由注册/注销
-- `SandboxClaim` reconcile 核心覆盖确定性 Pod 名称、AlreadyExists 幂等、Ready 探活、删除回收和运行时白名单
+- `SandboxClaimValidator`：admission webhook 校验 classRef ∈ {runc,gvisor,kata}（`operator.SetupWebhook(mgr)`，`--enable-webhook=true` 开启）
+- fake client 测试覆盖 CRD 读写、Pod 创建、status 回填、finalizer、路由注册/注销与 webhook 校验
 
 `internal/dataplane` 提供数据面边界：
 
@@ -63,10 +79,5 @@ kubectl apply -f deploy/kubernetes/envd-proxy.yaml   # 数据面边界（需先�
 - `Admin` 路由管理 API（共享密钥常量时间比较鉴权）
 - `HealthMonitor` 后端健康探测（连续失败阈值注销）
 - `RouteClient` 控制面/operator 侧的路由注册客户端（实现 `RouteRegistrar`）
-
-生产接入前仍需补齐：
-
-1. 为租户命名空间和 envd-proxy 配置生产 NetworkPolicy；
-2. 接入 Webhook 校验 SandboxClass/runtimeClassName。
 
 部署前应先为每个租户 namespace 创建 deny-all NetworkPolicy，再创建沙箱 Pod。示例清单中的 `sandbox-tenant-example` 仅用于开发验证。

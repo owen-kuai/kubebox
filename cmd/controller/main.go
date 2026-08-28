@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
 var (
@@ -29,21 +30,31 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var enableLeaderElection bool
+	var enableWebhook bool
+	var webhookCertDir string
+	var webhookPort int
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address to bind metrics server")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address to bind health probe server")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election (requires RBAC)")
+	flag.BoolVar(&enableWebhook, "enable-webhook", false, "enable the validating admission webhook (requires TLS cert)")
+	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs", "webhook TLS certificate directory")
+	flag.IntVar(&webhookPort, "webhook-port", 9443, "webhook server port")
 
 	logger := zap.New(zap.UseFlagOptions(&zap.Options{}))
 	ctrl.SetLogger(logger)
 	flag.Parse()
 
-	manager, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	opts := ctrl.Options{
 		Scheme:                 scheme,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "kubebox-controller.sandbox.kubebox.io",
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
-	})
+	}
+	if enableWebhook {
+		opts.WebhookServer = webhook.NewServer(webhook.Options{Port: webhookPort, CertDir: webhookCertDir})
+	}
+	manager, err := ctrl.NewManager(ctrl.GetConfigOrDie(), opts)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -66,6 +77,13 @@ func main() {
 	if err := operator.SetupManager(manager, registrar); err != nil {
 		setupLog.Error(err, "unable to set up controller")
 		os.Exit(1)
+	}
+
+	if enableWebhook {
+		if err := operator.SetupWebhook(manager); err != nil {
+			setupLog.Error(err, "unable to set up webhook")
+			os.Exit(1)
+		}
 	}
 
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {

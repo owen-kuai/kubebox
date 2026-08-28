@@ -48,11 +48,13 @@ kubectl apply -f deploy/kubernetes/mvp.yaml        # CRD + gVisor RuntimeClass +
 kubectl apply -f deploy/kubernetes/controller.yaml # SandboxClaim Operator + RBAC
 kubectl apply -f deploy/kubernetes/runtime.yaml    # Kata 强隔离档 RuntimeClass
 kubectl apply -f deploy/kubernetes/envd-proxy.yaml # 数据面边界（需先建 envd-proxy-secret）
+kubectl apply -f deploy/kubernetes/networkpolicy.yaml # 生产 NetworkPolicy
+kubectl apply -f deploy/kubernetes/webhook.yaml       # 隔离档校验 Webhook（需先注入 TLS cert）
 ```
 
 已接入的实现骨架还包括：
 
-- `internal/operator`：controller-runtime `SandboxClaim` Reconcile、Kubernetes Pod adapter（注入 sandbox id、envd 双端口与 emptyDir 沙箱卷）、finalizer/status 回填、`syncRoute` 路由联动（Ready 注册 / 删除注销）
+- `internal/operator`：controller-runtime `SandboxClaim` Reconcile、Kubernetes Pod adapter（注入 sandbox id、envd 双端口与 emptyDir 沙箱卷）、finalizer/status 回填、`syncRoute` 路由联动（Ready 注册 / 删除注销）、`SandboxClaimValidator` admission webhook（校验 classRef ∈ {runc,gvisor,kata}）
 - `internal/dataplane`：`TokenIssuer`（短期 scope JWT 签发/校验）、`Proxy`（凭证剥离 + sandbox id/scope 注入 + 反向代理）、`RouteRegistry`（沙箱路由表）、`Admin`（控制面路由管理 API）、`HealthMonitor`（后端健康探测注销）、`RouteClient`（operator 侧路由注册客户端）
 - `internal/envd`：envd 最小 gRPC 执行服务 + e2b 风格 HTTP 门面（`/healthz`、`/commands`、`/files/read|write`）、scope 与 sandbox identity 校验、进程内 `ProcessExecutor`（限定沙箱 root 内执行与文件 IO、路径穿越/符号链接逃逸防护、超时与输出上限）、`MemoryExecutor`（测试用）
 - `cmd/envd`：沙箱容器主进程（gRPC :50051 + HTTP :8080 双协议，共享 ProcessExecutor，信号优雅退出）
@@ -63,7 +65,7 @@ kubectl apply -f deploy/kubernetes/envd-proxy.yaml # 数据面边界（需先建
 
 数据面已形成完整可执行链路：`envd-proxy`（公网边界校验短期 scope JWT、剥离凭证、经 `/internal/v1/routes` 注册路由、健康探测注销死路由）→ 注入 sandbox id 与派生 scope → `envd` HTTP 门面（可信容器内复核身份/scope）→ `ProcessExecutor`（沙箱 root 内真实命令与文件 IO）。`cmd/envd` 以主进程嵌入沙箱容器（镜像 `deploy/docker/envd.Dockerfile`），`KubePodClient` 创建 Pod 时注入 sandbox id、挂载 emptyDir `/sandbox` 并暴露 gRPC/HTTP 双端口；`cmd/envd-proxy` 以独立 Deployment 运行（镜像 `deploy/docker/envd-proxy.Dockerfile`）。路由由 operator 在 SandboxClaim Ready/删除时通过 `RouteClient` 自动注册/注销（`KUBEBOX_ENVD_PROXY_URL` + `KUBEBOX_ADMIN_SECRET`）。
 
-Kata 强隔离档已补齐：`deploy/kubernetes/runtime.yaml` 定义 Kata RuntimeClass（nodeSelector 绑定裸金属 KVM 节点池 + toleration），节点运行时部署见 `docs/kata-runtime-deployment.md`。
+Kata 强隔离档已补齐：`deploy/kubernetes/runtime.yaml` 定义 Kata RuntimeClass（nodeSelector 绑定裸金属 KVM 节点池 + toleration），节点运行时部署见 `docs/kata-runtime-deployment.md`。隔离降级防护由 `deploy/kubernetes/webhook.yaml`（ValidatingWebhook 校验 classRef 白名单）+ 生产 `deploy/kubernetes/networkpolicy.yaml`（envd-proxy→沙箱、controller→envd-proxy 等东西向流量）共同兜底。
 
 ## 关键决策
 

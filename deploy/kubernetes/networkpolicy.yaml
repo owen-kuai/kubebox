@@ -1,0 +1,190 @@
+# kubebox 生产 NetworkPolicy
+#
+# 补齐 mvp.yaml 的 deny-all 基线，显式放行生产必需的东西向流量。基线：
+#   - sandbox-system（控制面）与租户 namespace 均默认 deny-all（见 mvp.yaml）
+#   - 本清单放行：envd-proxy -> 沙箱 Pod（数据面）、controller -> envd-proxy（路由管理）
+#     controller/api -> K8s API、以及各组件 DNS 解析
+#
+# 应用：kubectl apply -f deploy/kubernetes/networkpolicy.yaml
+---
+# ── 控制面 namespace（sandbox-system）──
+
+# envd-proxy：出站到沙箱 Pod（HTTP :8080 数据面 + gRPC :50051 控制面）+ DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: envd-proxy-egress
+  namespace: sandbox-system
+spec:
+  podSelector:
+    matchLabels:
+      app: envd-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubebox.io/trust-domain: sandbox-data
+          podSelector:
+            matchLabels:
+              kubebox.io/workload: sandbox
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 50051
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# envd-proxy：入站仅允许公网边缘（Ingress/网关）。按实际网关 namespace 调整。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: envd-proxy-ingress
+  namespace: sandbox-system
+spec:
+  podSelector:
+    matchLabels:
+      app: envd-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# controller：出站到 envd-proxy（路由管理 API :8080）+ K8s API + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubebox-controller-egress
+  namespace: sandbox-system
+spec:
+  podSelector:
+    matchLabels:
+      app: kubebox-controller
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: envd-proxy
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# kubebox-api（控制面 HTTP）：出站到 K8s API + 数据库 + DNS。
+# 数据库地址按实际部署替换（MySQL 3306 / PostgreSQL 5432）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubebox-api-egress
+  namespace: sandbox-system
+spec:
+  podSelector:
+    matchLabels:
+      app: kubebox-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 数据库（示例，按需取消注释并替换为实际 DB namespace/IP）
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.190.25.0/24
+    #   ports:
+    #     - protocol: TCP
+    #       port: 3306
+---
+# ── 租户 namespace（示例，按每个 tenant 重复）──
+
+# 沙箱 Pod：入站仅允许控制面 envd-proxy（HTTP :8080 + gRPC :50051）。
+# 替代 mvp.yaml 的 sandbox-tenant-allow-proxy（补齐 HTTP 数据面端口）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-tenant-allow-proxy
+  namespace: sandbox-tenant-example
+spec:
+  podSelector:
+    matchLabels:
+      kubebox.io/workload: sandbox
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sandbox-system
+          podSelector:
+            matchLabels:
+              app: envd-proxy
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 50051
+---
+# 沙箱 Pod：出站默认拒绝，仅放行 DNS + 白名单依赖/镜像源（按需扩展）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-tenant-egress
+  namespace: sandbox-tenant-example
+spec:
+  podSelector:
+    matchLabels:
+      kubebox.io/workload: sandbox
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 白名单依赖源（示例，按需替换为公司内网镜像/依赖源 CIDR）
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.190.0.0/16
+    #   ports:
+    #     - protocol: TCP
+    #       port: 443
