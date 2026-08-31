@@ -40,6 +40,7 @@
 - Kubernetes 声明式基线：`deploy/kubernetes/mvp.yaml`，包含 Sandbox/SandboxClass/SandboxClaim CRD、gVisor RuntimeClass、控制面 Deployment、租户 deny-all NetworkPolicy
 
 ```bash
+# 快速开始（或用 make build / make test / make vet / make deploy）
 go test ./...
 go run ./cmd/kubebox                       # 控制面（默认内存治理边界）
 go run ./cmd/envd --sandbox-id sbx-1 --root /tmp/sbx-1   # 沙箱内 envd 主进程
