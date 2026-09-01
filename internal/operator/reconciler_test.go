@@ -54,12 +54,15 @@ func TestReconcileCreatesOnceAndWaitsForHealth(t *testing.T) {
 	}
 	podName := claim.PodName
 	pod := pods.pods[pods.key(claim.Namespace, podName)]
+	if pod.Labels["kubebox.io/workload"] != "sandbox" {
+		t.Fatalf("workload label = %q", pod.Labels["kubebox.io/workload"])
+	}
 	pod.Ready, pod.Healthy = true, true
 	pods.pods[pods.key(claim.Namespace, podName)] = pod
 	if requeue, err := r.Reconcile(claim); err != nil || requeue {
 		t.Fatalf("ready reconcile = requeue %v err %v", requeue, err)
 	}
-	if claim.Phase != ClaimReady || claim.ProxyEndpoint == "" {
+	if claim.Phase != ClaimReady || claim.ProxyEndpoint != "envd-proxy.sandbox-system.svc:8080" {
 		t.Fatalf("claim not ready: %+v", claim)
 	}
 	if _, err := r.Reconcile(claim); err != nil {
@@ -67,6 +70,39 @@ func TestReconcileCreatesOnceAndWaitsForHealth(t *testing.T) {
 	}
 	if pods.creates != 1 {
 		t.Fatalf("leader handoff created duplicate pod: %d", pods.creates)
+	}
+}
+
+func TestReadyExpirationIsStableAndDeletesAtTTL(t *testing.T) {
+	pods := newFakePods()
+	now := time.Unix(100, 0).UTC()
+	r := &Reconciler{Pods: pods, Now: func() time.Time { return now }}
+	claim := &Claim{Namespace: "sandbox-tenant-a", Name: "claim-ttl", TenantID: "tenant-a", OwnerID: "owner-1", IdempotencyKey: "key-ttl", Template: "python", TTLSeconds: 60}
+	podName := DeterministicPodName(claim.TenantID, claim.IdempotencyKey)
+	pods.pods[pods.key(claim.Namespace, podName)] = Pod{Namespace: claim.Namespace, Name: podName, IP: "10.0.0.5", Ready: true, Healthy: true}
+
+	if _, err := r.Reconcile(claim); err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := time.Unix(160, 0).UTC()
+	if !claim.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("expiresAt = %s, want %s", claim.ExpiresAt, wantExpiry)
+	}
+
+	now = time.Unix(130, 0).UTC()
+	if _, err := r.Reconcile(claim); err != nil {
+		t.Fatal(err)
+	}
+	if !claim.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("expiresAt slid to %s", claim.ExpiresAt)
+	}
+
+	now = wantExpiry
+	if _, err := r.Reconcile(claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Phase != ClaimDeleted || pods.deletes != 1 {
+		t.Fatalf("expired claim = phase %s deletes %d", claim.Phase, pods.deletes)
 	}
 }
 

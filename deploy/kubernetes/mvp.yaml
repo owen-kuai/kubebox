@@ -81,7 +81,9 @@ spec:
               type: object
               required: [classRef, template, ttlSeconds]
               properties:
-                classRef: {type: string}
+                classRef:
+                  type: string
+                  enum: [runc, gvisor, kata]
                 template: {type: string, minLength: 1}
                 ttlSeconds: {type: integer, minimum: 30, maximum: 86400}
                 resources:
@@ -142,9 +144,11 @@ spec:
           properties:
             spec:
               type: object
-              required: [classRef, template, ttlSeconds]
+              required: [classRef, template, ttlSeconds, idempotencyKey]
               properties:
-                classRef: {type: string}
+                classRef:
+                  type: string
+                  enum: [runc, gvisor, kata]
                 template: {type: string}
                 ttlSeconds: {type: integer, minimum: 30, maximum: 86400}
                 desiredState:
@@ -156,7 +160,7 @@ spec:
               properties:
                 phase:
                   type: string
-                  enum: [Pending, Provisioning, Fulfilled, Finished, Released, Deleted, Failed]
+                  enum: [Pending, Provisioning, Ready, Draining, Fulfilled, Finished, Released, Deleted, Failed]
                 sandboxRef: {type: string}
                 proxyEndpoint: {type: string}
                 allocationID: {type: string}
@@ -175,7 +179,9 @@ metadata:
   name: kubebox-api
   namespace: sandbox-system
 spec:
-  replicas: 2
+  # The MVP API keeps sandbox projections in process memory. Run one replica
+  # until sandbox records and idempotency state are backed by durable storage.
+  replicas: 1
   selector:
     matchLabels: {app: kubebox-api}
   template:

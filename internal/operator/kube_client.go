@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -64,6 +65,17 @@ func (k *KubePodClient) Create(pod Pod) error {
 			AutomountServiceAccountToken: boolPtr(false),
 			SecurityContext:              &corev1.PodSecurityContext{RunAsNonRoot: boolPtr(true)},
 		},
+	}
+	if pod.OwnerUID != "" && pod.Labels["kubebox.io/claim"] != "" {
+		controller, blockDeletion := true, true
+		object.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion:         "sandbox.kubebox.io/v1alpha1",
+			Kind:               "SandboxClaim",
+			Name:               pod.Labels["kubebox.io/claim"],
+			UID:                types.UID(pod.OwnerUID),
+			Controller:         &controller,
+			BlockOwnerDeletion: &blockDeletion,
+		}}
 	}
 	if err := k.Client.Create(context.Background(), object); err != nil {
 		if apierrors.IsAlreadyExists(err) {

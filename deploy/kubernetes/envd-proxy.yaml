@@ -38,7 +38,9 @@ metadata:
   labels:
     app: envd-proxy
 spec:
-  replicas: 2
+  # RouteRegistry is process-local; use one replica until routes are shared via
+  # a durable registry or a consistent-routing layer is introduced.
+  replicas: 1
   selector:
     matchLabels:
       app: envd-proxy

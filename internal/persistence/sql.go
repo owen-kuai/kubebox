@@ -54,29 +54,37 @@ func (s *SQLStore) SetQuota(ctx context.Context, tenantID, ownerID string, limit
 	if tenantID == "" || ownerID == "" || limit < 0 {
 		return ErrInvalidArgument
 	}
-	if s.dialect == DialectMySQL {
-		query := `INSERT INTO t_owner_quota (tenant_id, owner_id, concurrent_limit, current_count) VALUES (?, ?, ?, 0) ON DUPLICATE KEY UPDATE concurrent_limit = IF(current_count > VALUES(concurrent_limit), current_count, VALUES(concurrent_limit))`
-		if _, err := s.db.ExecContext(ctx, query, tenantID, ownerID, limit); err != nil {
-			return err
-		}
-		return nil
-	}
-	// Postgres: upsert, then reject lowering below current usage.
-	upsert := s.bind(`INSERT INTO t_owner_quota (tenant_id, owner_id, concurrent_limit, current_count) VALUES (?, ?, ?, 0) ON CONFLICT (tenant_id, owner_id) DO UPDATE SET concurrent_limit = EXCLUDED.concurrent_limit`)
-	if _, err := s.db.ExecContext(ctx, upsert, tenantID, ownerID, limit); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
+	}
+	rollback := func(cause error) error { _ = tx.Rollback(); return cause }
+	// Materialize the row before locking it. This closes the first-write race
+	// where two concurrent quota initializations both observe no row and then
+	// contend on the primary key.
+	ensure := `INSERT INTO t_owner_quota (tenant_id, owner_id, concurrent_limit, current_count) VALUES (?, ?, ?, 0)`
+	if s.dialect == DialectPostgres {
+		ensure += ` ON CONFLICT (tenant_id, owner_id) DO NOTHING`
+	} else {
+		ensure += ` ON DUPLICATE KEY UPDATE tenant_id = tenant_id`
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(ensure), tenantID, ownerID, limit); err != nil {
+		return rollback(err)
 	}
 	var current int
-	check := s.bind(`SELECT current_count FROM t_owner_quota WHERE tenant_id = ? AND owner_id = ?`)
-	if err := s.db.QueryRowContext(ctx, check, tenantID, ownerID).Scan(&current); err != nil {
-		return err
+	selectForUpdate := s.bind(`SELECT current_count FROM t_owner_quota WHERE tenant_id = ? AND owner_id = ? FOR UPDATE`)
+	err = tx.QueryRowContext(ctx, selectForUpdate, tenantID, ownerID).Scan(&current)
+	if err != nil {
+		return rollback(err)
 	}
 	if current > limit {
-		restore := s.bind(`UPDATE t_owner_quota SET concurrent_limit = current_count WHERE tenant_id = ? AND owner_id = ?`)
-		_, _ = s.db.ExecContext(ctx, restore, tenantID, ownerID)
-		return ErrQuotaBelowUsage
+		return rollback(ErrQuotaBelowUsage)
 	}
-	return nil
+	update := s.bind(`UPDATE t_owner_quota SET concurrent_limit = ? WHERE tenant_id = ? AND owner_id = ?`)
+	if _, err := tx.ExecContext(ctx, update, limit, tenantID, ownerID); err != nil {
+		return rollback(err)
+	}
+	return tx.Commit()
 }
 
 // ReserveAllocation atomically reserves one owner quota slot and creates its

@@ -23,6 +23,7 @@ const (
 type Claim struct {
 	Namespace      string
 	Name           string
+	UID            string
 	TenantID       string
 	OwnerID        string
 	IdempotencyKey string
@@ -43,6 +44,7 @@ type Pod struct {
 	Name         string
 	RuntimeClass string
 	SandboxID    string
+	OwnerUID     string
 	IP           string
 	Labels       map[string]string
 	Ready        bool
@@ -68,11 +70,15 @@ func (r *Reconciler) Reconcile(claim *Claim) (bool, error) {
 	if r.Now == nil {
 		r.Now = time.Now
 	}
+	now := r.Now().UTC()
 	if claim.RuntimeClass == "" {
 		claim.RuntimeClass = "gvisor"
 	}
 	if claim.TTLSeconds <= 0 {
 		claim.TTLSeconds = 1800
+	}
+	if claim.DesiredState != "Deleted" && !claim.ExpiresAt.IsZero() && !now.Before(claim.ExpiresAt) {
+		claim.DesiredState = "Deleted"
 	}
 	if claim.DesiredState == "Deleted" {
 		return r.reconcileDelete(claim)
@@ -89,11 +95,12 @@ func (r *Reconciler) Reconcile(claim *Claim) (bool, error) {
 	}
 	if errors.Is(err, ErrNotFound) {
 		pod = Pod{
-			Namespace: claim.Namespace, Name: claim.PodName, RuntimeClass: claim.RuntimeClass, SandboxID: claim.Name,
+			Namespace: claim.Namespace, Name: claim.PodName, RuntimeClass: claim.RuntimeClass, SandboxID: claim.Name, OwnerUID: claim.UID,
 			Labels: map[string]string{
-				"kubebox.io/tenant": claim.TenantID,
-				"kubebox.io/owner":  claim.OwnerID,
-				"kubebox.io/claim":  claim.Name,
+				"kubebox.io/tenant":   claim.TenantID,
+				"kubebox.io/owner":    claim.OwnerID,
+				"kubebox.io/claim":    claim.Name,
+				"kubebox.io/workload": "sandbox",
 			},
 		}
 		if err := r.Pods.Create(pod); err != nil && !errors.Is(err, ErrAlreadyExists) {
@@ -117,8 +124,10 @@ func (r *Reconciler) Reconcile(claim *Claim) (bool, error) {
 	claim.Phase = ClaimReady
 	claim.SandboxID = claim.Name
 	claim.PodIP = pod.IP
-	claim.ProxyEndpoint = fmt.Sprintf("envd-proxy.%s.svc:443", claim.Namespace)
-	claim.ExpiresAt = r.Now().UTC().Add(time.Duration(claim.TTLSeconds) * time.Second)
+	claim.ProxyEndpoint = "envd-proxy.sandbox-system.svc:8080"
+	if claim.ExpiresAt.IsZero() {
+		claim.ExpiresAt = now.Add(time.Duration(claim.TTLSeconds) * time.Second)
+	}
 	return false, nil
 }
 
@@ -132,6 +141,7 @@ func (r *Reconciler) reconcileDelete(claim *Claim) (bool, error) {
 	}
 	claim.Phase = ClaimDeleted
 	claim.ProxyEndpoint = ""
+	claim.ExpiresAt = time.Time{}
 	return false, nil
 }
 

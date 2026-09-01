@@ -139,7 +139,7 @@ func (s *Store) SetQuota(tenantID, ownerID string, limit int) error {
 		q = &Quota{TenantID: tenantID, OwnerID: ownerID}
 		s.quotas[key] = q
 	}
-	if limit < q.CurrentCount {
+	if s.gov == nil && limit < q.CurrentCount {
 		return ErrQuotaBelowUsage
 	}
 	// Persist to the durable boundary first; on failure abort without touching
@@ -301,12 +301,21 @@ func (s *Store) releaseAllocationLocked(allocationID string) error {
 		if err := s.gov.ReleaseAllocation(context.Background(), allocation.TenantID, allocation.OwnerID, allocationID, time.Now().UTC()); err != nil {
 			return mapGovError(err)
 		}
+		allocation.Status = AllocationReleased
+		// The durable store is authoritative. A process restart can leave the
+		// local read projection empty or stale, so never turn a successful DB
+		// release into an error that would trigger an unsafe retry. Synchronize
+		// the projection opportunistically when it has a usable row.
+		if quota := s.quotas[quotaKey(allocation.TenantID, allocation.OwnerID)]; quota != nil && quota.CurrentCount > 0 {
+			quota.CurrentCount--
+		}
+		return nil
 	}
-	allocation.Status = AllocationReleased
 	quota := s.quotas[quotaKey(allocation.TenantID, allocation.OwnerID)]
 	if quota == nil || quota.CurrentCount <= 0 {
 		return ErrQuotaCorrupt
 	}
+	allocation.Status = AllocationReleased
 	quota.CurrentCount--
 	return nil
 }

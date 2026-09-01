@@ -116,12 +116,12 @@ func (m *MemoryGovernanceStore) ReleaseAllocation(ctx context.Context, tenantID,
 	if alloc.status == "RELEASED" {
 		return nil
 	}
-	alloc.status = "RELEASED"
 	key := tenantID + "\x00" + ownerID
 	row := m.quotas[key]
 	if row == nil || row.currentCount <= 0 {
 		return ErrQuotaCorrupt
 	}
+	alloc.status = "RELEASED"
 	row.currentCount--
 	return nil
 }

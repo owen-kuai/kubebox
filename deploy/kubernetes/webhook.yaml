@@ -33,7 +33,9 @@ webhooks:
   - name: vsandboxclaim.kubebox.io
     admissionReviewVersions: [v1]
     sideEffects: None
-    failurePolicy: Fail
+    # This manifest is safe to apply before TLS/controller wiring is enabled.
+    # Set to Fail in the production overlay once the webhook endpoint is live.
+    failurePolicy: Ignore
     timeoutSeconds: 10
     clientConfig:
       service:
